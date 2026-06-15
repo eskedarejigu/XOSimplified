@@ -253,55 +253,32 @@ function canMakeMove(position) {
  * @param {number} position - Cell index (0-8)
  */
 async function makeMove(position) {
+    const user = getCurrentUser();
     const matchId = gameState.matchId;
-    if (!gameState.isAI) {
-        const { data: moveResult, error } = await makeSecureMove(matchId, position);
-
-        if (error || !moveResult?.success) {
-            const errorMessage = moveResult?.error || error?.message || 'Move rejected by server';
-            showToast(errorMessage, 'error');
-            return;
-        }
-
-        gameState.board = moveResult.board;
-        gameState.currentTurn = moveResult.current_turn || (gameState.mySymbol === 'X' ? 'O' : 'X');
-        gameState.isMyTurn = gameState.currentTurn === gameState.mySymbol;
-        gameState.moveCount++;
-
-        updateBoardUI();
-        updateTurnIndicator();
-        updateBoardInteraction();
-
-        if (moveResult.game_over) {
-            handleGameEnd({
-                winner: moveResult.winner_id || null,
-                board_state: moveResult.board,
-            });
-        }
-
-        return;
-    }
-
     const symbol = gameState.mySymbol;
 
-    // Update local board immediately for AI games
+    // Update local board immediately (optimistic update)
     const boardArray = gameState.board.split('');
     boardArray[position] = symbol;
     const newBoard = boardArray.join('');
     const newTurn = symbol === 'X' ? 'O' : 'X';
 
+    // Update local state
     gameState.board = newBoard;
     gameState.currentTurn = newTurn;
-    gameState.isMyTurn = false;
+    gameState.isMyTurn = false; // Just made our move
     gameState.moveCount++;
 
+    // Update UI immediately
     updateBoardUI();
     updateTurnIndicator();
     updateBoardInteraction();
 
+    // Check for win/draw locally
     const gameResult = checkGameResult(newBoard);
-
+    
     if (gameResult.gameOver) {
+        // Game ended - update match as completed
         await completeMatch(matchId, gameResult.winner, newBoard, newTurn);
         handleGameEnd({
             winner: gameResult.winner,
@@ -309,6 +286,22 @@ async function makeMove(position) {
         });
         return;
     }
+
+    // Send move to Supabase
+    // We do TWO operations: record the move + update the match
+    
+    // 1. Record the move in moves table
+    await recordMove({
+        match_id: matchId,
+        player_id: user.id,
+        position: position,
+    });
+
+    // 2. Update the match state
+    await updateMatch(matchId, {
+        board_state: newBoard,
+        current_turn: newTurn,
+    });
 
     // If playing against AI, trigger AI move
     if (gameState.isAI && !gameState.gameOver) {

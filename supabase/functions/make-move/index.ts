@@ -24,12 +24,10 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.0';
 
 // CORS headers
 const corsHeaders = {
-    'Access-Control-Allow-Origin': Deno.env.get('ALLOWED_ORIGIN') || '*',
+    'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
     'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
-
-const MAX_AUTH_AGE_SECONDS = 120;
 
 // Winning lines for Tic-Tac-Toe
 const WINNING_LINES = [
@@ -59,105 +57,8 @@ function isDraw(board: string): boolean {
     return !board.includes('-');
 }
 
-async function verifyInitData(initData: string, botToken: string): Promise<boolean> {
-    try {
-        const params = new URLSearchParams(initData);
-        const hash = params.get('hash');
-
-        if (!hash) {
-            return false;
-        }
-
-        params.delete('hash');
-
-        const sortedParams = Array.from(params.entries())
-            .sort(([a], [b]) => a.localeCompare(b));
-
-        const dataCheckString = sortedParams
-            .map(([key, value]) => `${key}=${value}`)
-            .join('\n');
-
-        const encoder = new TextEncoder();
-        const webAppDataKey = await crypto.subtle.importKey(
-            'raw',
-            encoder.encode('WebAppData'),
-            { name: 'HMAC', hash: 'SHA-256' },
-            false,
-            ['sign']
-        );
-
-        const secretBytes = await crypto.subtle.sign('HMAC', webAppDataKey, encoder.encode(botToken));
-
-        const signatureKey = await crypto.subtle.importKey(
-            'raw',
-            secretBytes,
-            { name: 'HMAC', hash: 'SHA-256' },
-            false,
-            ['sign']
-        );
-
-        const signature = await crypto.subtle.sign('HMAC', signatureKey, encoder.encode(dataCheckString));
-
-        const computedHash = Array.from(new Uint8Array(signature))
-            .map((b) => b.toString(16).padStart(2, '0'))
-            .join('');
-
-        return computedHash === hash;
-    } catch {
-        return false;
-    }
-}
-
-function extractTelegramUser(initData: string): any {
-    try {
-        const params = new URLSearchParams(initData);
-        const userJson = params.get('user');
-        return userJson ? JSON.parse(userJson) : null;
-    } catch {
-        return null;
-    }
-}
-
-function isFreshAuthDate(initData: string): boolean {
-    const params = new URLSearchParams(initData);
-    const authDateRaw = params.get('auth_date');
-
-    if (!authDateRaw) {
-        return false;
-    }
-
-    const authDate = Number(authDateRaw);
-    if (!Number.isFinite(authDate)) {
-        return false;
-    }
-
-    const now = Math.floor(Date.now() / 1000);
-    return now - authDate <= MAX_AUTH_AGE_SECONDS;
-}
-
-async function resolvePlayerId(supabase: any, initData: string): Promise<string | null> {
-    const telegramUser = extractTelegramUser(initData);
-    const telegramId = telegramUser?.id?.toString();
-
-    if (!telegramId) {
-        return null;
-    }
-
-    const { data: user, error } = await supabase
-        .from('users')
-        .select('id')
-        .eq('telegram_id', telegramId)
-        .single();
-
-    if (error || !user?.id) {
-        return null;
-    }
-
-    return user.id;
-}
-
 // Main request handler
-serve(async (req: Request) => {
+serve(async (req) => {
     // Handle CORS preflight
     if (req.method === 'OPTIONS') {
         return new Response('ok', { headers: corsHeaders });
@@ -178,46 +79,15 @@ serve(async (req: Request) => {
         const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
         // Parse request body
-        const botToken = Deno.env.get('BOT_TOKEN');
-        if (!botToken) {
-            return new Response(
-                JSON.stringify({ error: 'Server configuration error' }),
-                { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-            );
-        }
-
         const body = await req.json();
-        const { match_id, position, initData } = body;
-
-        if (!initData) {
-            return new Response(
-                JSON.stringify({ error: 'Missing initData' }),
-                { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-            );
-        }
-
-        const isValid = await verifyInitData(initData, botToken);
-        if (!isValid || !isFreshAuthDate(initData)) {
-            return new Response(
-                JSON.stringify({ error: 'Invalid Telegram authentication' }),
-                { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-            );
-        }
-
-        const player_id = await resolvePlayerId(supabase, initData);
-        if (!player_id) {
-            return new Response(
-                JSON.stringify({ error: 'Unable to resolve player identity' }),
-                { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-            );
-        }
+        const { match_id, player_id, position } = body;
 
         // ====== VALIDATION ======
 
         // Check required fields
-        if (!match_id || position === undefined) {
+        if (!match_id || !player_id || position === undefined) {
             return new Response(
-                JSON.stringify({ error: 'Missing required fields: match_id, position' }),
+                JSON.stringify({ error: 'Missing required fields: match_id, player_id, position' }),
                 { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
             );
         }
@@ -255,7 +125,7 @@ serve(async (req: Request) => {
 
         // Check player is in this match
         const isPlayerX = match.player_x === player_id;
-        const isPlayerO = match.player_o === player_id;
+        const isPlayerO = match.player_o === player_id || player_id === 'ai_opponent';
 
         if (!isPlayerX && !isPlayerO) {
             return new Response(
@@ -337,7 +207,6 @@ serve(async (req: Request) => {
             position: position,
             symbol: playerSymbol,
             board: newBoard,
-            current_turn: newTurn,
             game_over: false,
         };
 
