@@ -75,6 +75,73 @@ async function testSupabaseConnection() {
     }
 }
 
+/**
+ * Read Telegram initData from WebApp SDK.
+ * Throws if not available.
+ */
+function getTelegramInitData() {
+    const initData = window.Telegram?.WebApp?.initData;
+    if (!initData) {
+        throw new Error('Missing Telegram initData');
+    }
+    return initData;
+}
+
+/**
+ * Invoke an Edge Function with Telegram initData attached.
+ * @param {string} functionName
+ * @param {Object} payload
+ */
+async function invokeProtectedFunction(functionName, payload = {}) {
+    try {
+        const body = {
+            ...payload,
+            initData: payload.initData || getTelegramInitData(),
+        };
+
+        const { data, error } = await supabaseClient.functions.invoke(functionName, { body });
+
+        if (error) {
+            console.error(`Error invoking ${functionName}:`, error);
+            return { data: null, error };
+        }
+
+        return { data, error: null };
+    } catch (error) {
+        console.error(`Protected call failed for ${functionName}:`, error);
+        return { data: null, error };
+    }
+}
+
+/**
+ * Verify Telegram session on the server and get trusted app user.
+ * @param {string} initData
+ */
+async function verifyTelegramSession(initData) {
+    const { data, error } = await invokeProtectedFunction('verify-telegram', { initData });
+
+    if (error) {
+        return { data: null, error };
+    }
+
+    if (!data?.valid) {
+        return {
+            data: null,
+            error: { message: data?.error || 'Telegram verification failed' },
+        };
+    }
+
+    const appUser = data.appUser || data.user;
+    if (!appUser) {
+        return {
+            data: null,
+            error: { message: 'Verified response missing user' },
+        };
+    }
+
+    return { data: appUser, error: null };
+}
+
 // ======== REALTIME CHANNEL MANAGEMENT ========
 // We keep track of active channels so we can unsubscribe cleanly
 const activeChannels = new Map();
@@ -210,22 +277,25 @@ async function updateUserStats(userId, updates) {
  * @param {Object} telegramUser - User data from Telegram WebApp
  */
 async function getOrCreateUser(telegramUser) {
-    // First, try to find the user by telegram_id
+    const initData = window.Telegram?.WebApp?.initData;
+
+    if (initData) {
+        return await verifyTelegramSession(initData);
+    }
+
+    // Local development fallback (non-Telegram environment only)
     const { data: existingUser, error: fetchError } = await getUserByTelegramId(
         telegramUser.id.toString()
     );
 
-    // If user exists, return them
     if (existingUser) {
         return { data: existingUser, error: null };
     }
 
-    // If error is not "not found", return the error
     if (fetchError && fetchError.code !== 'PGRST116') {
         return { data: null, error: fetchError };
     }
 
-    // User doesn't exist, create them
     const newUser = {
         telegram_id: telegramUser.id.toString(),
         username: telegramUser.username || null,
@@ -319,17 +389,14 @@ async function getMatchMoves(matchId) {
  * @param {string} userId - UUID of the user
  */
 async function joinWaitingQueue(userId) {
-    const { data, error } = await supabaseClient
-        .from('waiting_queue')
-        .insert([{ user_id: userId }])
-        .select()
-        .single();
+    const { data, error } = await invokeProtectedFunction('join-queue', { action: 'join' });
 
     if (error) {
         console.error('Error joining queue:', error);
+        return { data: null, error };
     }
 
-    return { data, error };
+    return { data: data?.entry || data, error: null };
 }
 
 /**
@@ -337,10 +404,7 @@ async function joinWaitingQueue(userId) {
  * @param {string} userId - UUID of the user
  */
 async function leaveWaitingQueue(userId) {
-    const { error } = await supabaseClient
-        .from('waiting_queue')
-        .delete()
-        .eq('user_id', userId);
+    const { error } = await invokeProtectedFunction('join-queue', { action: 'leave' });
 
     if (error) {
         console.error('Error leaving queue:', error);
@@ -354,22 +418,14 @@ async function leaveWaitingQueue(userId) {
  * Returns the oldest waiting user (FIFO queue).
  */
 async function findOpponentInQueue(excludeUserId) {
-    const { data, error } = await supabaseClient
-        .from('waiting_queue')
-        .select(`
-            *,
-            user:users!waiting_queue_user_id_fkey(id, telegram_id, username, first_name, photo_url)
-        `)
-        .neq('user_id', excludeUserId)
-        .order('joined_at', { ascending: true })
-        .limit(1)
-        .single();
+    const { data, error } = await invokeProtectedFunction('join-queue', { action: 'find-opponent' });
 
-    if (error && error.code !== 'PGRST116') {
+    if (error) {
         console.error('Error finding opponent:', error);
+        return { data: null, error };
     }
 
-    return { data, error };
+    return { data, error: null };
 }
 
 /**
@@ -377,17 +433,32 @@ async function findOpponentInQueue(excludeUserId) {
  * @param {string} userId - UUID of the user
  */
 async function isUserInQueue(userId) {
-    const { data, error } = await supabaseClient
-        .from('waiting_queue')
-        .select('id')
-        .eq('user_id', userId)
-        .single();
+    const { data, error } = await invokeProtectedFunction('join-queue', { action: 'check' });
 
-    if (error && error.code !== 'PGRST116') {
+    if (error) {
         console.error('Error checking queue:', error);
+        return { inQueue: false, error };
     }
 
-    return { inQueue: !!data, error };
+    return { inQueue: !!data?.inQueue, error: null };
+}
+
+/**
+ * Make a server-validated move.
+ * @param {string} matchId
+ * @param {number} position
+ */
+async function makeSecureMove(matchId, position) {
+    const { data, error } = await invokeProtectedFunction('make-move', {
+        match_id: matchId,
+        position,
+    });
+
+    if (error) {
+        console.error('Error making secure move:', error);
+    }
+
+    return { data, error };
 }
 
 /**

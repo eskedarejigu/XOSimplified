@@ -51,9 +51,13 @@ async function initAuth() {
             console.log('Platform:', tgWebApp.platform);
             console.log('Version:', tgWebApp.version);
         } else {
-            // Not running inside Telegram - development mode
-            console.warn('Not running in Telegram WebApp - using dev mode');
-            return await initDevMode();
+            // Local development mode only (never allow this in production)
+            if (isLocalDevEnvironment()) {
+                console.warn('Not running in Telegram WebApp - using local dev mode');
+                return await initDevMode();
+            }
+
+            throw new Error('This app must be opened inside Telegram');
         }
 
         // Step 2: Extract user data from Telegram
@@ -65,19 +69,24 @@ async function initAuth() {
 
         console.log('Telegram user extracted:', telegramUser.first_name);
 
-        // Step 3: Verify initData authenticity
-        // In production, this should be done server-side via an Edge Function
-        const isValid = verifyInitData(tgWebApp.initData);
-        
-        if (!isValid) {
-            console.warn('initData verification failed - proceeding anyway for dev');
+        if (!tgWebApp.initData) {
+            throw new Error('Missing Telegram initData');
         }
 
-        // Step 4: Get or create user in Supabase
-        const { data: user, error } = await getOrCreateUser(telegramUser);
+        // Step 3: Verify with Edge Function and get server-trusted user record
+        const { data: user, error } = await verifyTelegramSession(tgWebApp.initData);
 
         if (error) {
-            throw new Error(`Failed to create/get user: ${error.message}`);
+            throw new Error(`Failed Telegram verification: ${error.message}`);
+        }
+
+        if (!user) {
+            throw new Error('Server did not return a user');
+        }
+
+        // Defensive consistency check between Telegram SDK data and server verification
+        if (telegramUser.id?.toString() !== user.telegram_id?.toString()) {
+            throw new Error('Telegram identity mismatch');
         }
 
         currentUser = user;
@@ -94,10 +103,14 @@ async function initAuth() {
         // Show error to user
         showToast('Authentication failed. Please try again.', 'error');
         updateConnectionStatus(false);
-        
-        // Fallback to dev mode for testing
-        return await initDevMode();
+
+        return null;
     }
+}
+
+function isLocalDevEnvironment() {
+    const host = window.location.hostname;
+    return host === 'localhost' || host === '127.0.0.1';
 }
 
 /**

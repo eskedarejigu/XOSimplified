@@ -16,10 +16,12 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.0';
 
 // CORS headers
 const corsHeaders = {
-    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Origin': Deno.env.get('ALLOWED_ORIGIN') || '*',
     'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
     'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
+
+const MAX_AUTH_AGE_SECONDS = 120;
 
 // Supabase admin client
 function getSupabase() {
@@ -28,23 +30,131 @@ function getSupabase() {
     return createClient(supabaseUrl, supabaseServiceKey);
 }
 
+async function verifyInitData(initData: string, botToken: string): Promise<boolean> {
+    try {
+        const params = new URLSearchParams(initData);
+        const hash = params.get('hash');
+
+        if (!hash) {
+            return false;
+        }
+
+        params.delete('hash');
+
+        const sortedParams = Array.from(params.entries())
+            .sort(([a], [b]) => a.localeCompare(b));
+
+        const dataCheckString = sortedParams
+            .map(([key, value]) => `${key}=${value}`)
+            .join('\n');
+
+        const encoder = new TextEncoder();
+        const webAppDataKey = await crypto.subtle.importKey(
+            'raw',
+            encoder.encode('WebAppData'),
+            { name: 'HMAC', hash: 'SHA-256' },
+            false,
+            ['sign']
+        );
+
+        const secretBytes = await crypto.subtle.sign('HMAC', webAppDataKey, encoder.encode(botToken));
+
+        const signatureKey = await crypto.subtle.importKey(
+            'raw',
+            secretBytes,
+            { name: 'HMAC', hash: 'SHA-256' },
+            false,
+            ['sign']
+        );
+
+        const signature = await crypto.subtle.sign('HMAC', signatureKey, encoder.encode(dataCheckString));
+
+        const computedHash = Array.from(new Uint8Array(signature))
+            .map((b) => b.toString(16).padStart(2, '0'))
+            .join('');
+
+        return computedHash === hash;
+    } catch {
+        return false;
+    }
+}
+
+function extractTelegramUser(initData: string): any {
+    try {
+        const params = new URLSearchParams(initData);
+        const userJson = params.get('user');
+        return userJson ? JSON.parse(userJson) : null;
+    } catch {
+        return null;
+    }
+}
+
+function isFreshAuthDate(initData: string): boolean {
+    const params = new URLSearchParams(initData);
+    const authDateRaw = params.get('auth_date');
+
+    if (!authDateRaw) {
+        return false;
+    }
+
+    const authDate = Number(authDateRaw);
+    if (!Number.isFinite(authDate)) {
+        return false;
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    return now - authDate <= MAX_AUTH_AGE_SECONDS;
+}
+
+async function resolveAppUserId(supabase: any, initData: string) {
+    const telegramUser = extractTelegramUser(initData);
+    const telegramId = telegramUser?.id?.toString();
+
+    if (!telegramId) {
+        return { userId: null, error: 'Telegram user id is missing' };
+    }
+
+    const { data: existingUser, error: fetchError } = await supabase
+        .from('users')
+        .select('id')
+        .eq('telegram_id', telegramId)
+        .single();
+
+    if (fetchError && fetchError.code !== 'PGRST116') {
+        return { userId: null, error: 'Failed to resolve app user' };
+    }
+
+    if (existingUser?.id) {
+        return { userId: existingUser.id, error: null };
+    }
+
+    const { data: createdUser, error: insertError } = await supabase
+        .from('users')
+        .insert([{
+            telegram_id: telegramId,
+            username: telegramUser.username || null,
+            first_name: telegramUser.first_name || 'Player',
+            photo_url: telegramUser.photo_url || null,
+        }])
+        .select('id')
+        .single();
+
+    if (insertError || !createdUser?.id) {
+        return { userId: null, error: 'Failed to create app user' };
+    }
+
+    return { userId: createdUser.id, error: null };
+}
+
 /**
  * Join the waiting queue
  */
-async function handleJoinQueue(body: any) {
-    const { user_id } = body;
-
-    if (!user_id) {
-        return { error: 'Missing user_id', status: 400 };
-    }
-
-    const supabase = getSupabase();
-
+async function handleJoinQueue(supabase: any, userId: string) {
     // Check if user is already in queue
     const { data: existing } = await supabase
         .from('waiting_queue')
         .select('id')
-        .eq('user_id', user_id)
+        .eq('user_id', userId)
         .single();
 
     if (existing) {
@@ -57,7 +167,7 @@ async function handleJoinQueue(body: any) {
     // Add to queue
     const { data, error } = await supabase
         .from('waiting_queue')
-        .insert([{ user_id }])
+        .insert([{ user_id: userId }])
         .select()
         .single();
 
@@ -72,20 +182,12 @@ async function handleJoinQueue(body: any) {
 /**
  * Find an opponent in the queue and create a match
  */
-async function handleFindOpponent(body: any) {
-    const { user_id } = body;
-
-    if (!user_id) {
-        return { error: 'Missing user_id', status: 400 };
-    }
-
-    const supabase = getSupabase();
-
+async function handleFindOpponent(supabase: any, userId: string) {
     // Find the oldest waiting player (FIFO)
     const { data: opponent, error } = await supabase
         .from('waiting_queue')
         .select('*')
-        .neq('user_id', user_id)
+        .neq('user_id', userId)
         .order('joined_at', { ascending: true })
         .limit(1)
         .single();
@@ -112,8 +214,8 @@ async function handleFindOpponent(body: any) {
     // Found an opponent! Create a match.
     // Randomly assign X and O
     const coinFlip = Math.random() < 0.5;
-    const playerX = coinFlip ? user_id : opponent.user_id;
-    const playerO = coinFlip ? opponent.user_id : user_id;
+    const playerX = coinFlip ? userId : opponent.user_id;
+    const playerO = coinFlip ? opponent.user_id : userId;
 
     // Remove opponent from queue FIRST (to prevent double-matching)
     const { error: deleteError } = await supabase
@@ -147,7 +249,7 @@ async function handleFindOpponent(body: any) {
         data: {
             found: true,
             match: match,
-            you_are_x: playerX === user_id,
+            you_are_x: playerX === userId,
         },
         status: 200,
     };
@@ -156,19 +258,11 @@ async function handleFindOpponent(body: any) {
 /**
  * Leave the waiting queue
  */
-async function handleLeaveQueue(body: any) {
-    const { user_id } = body;
-
-    if (!user_id) {
-        return { error: 'Missing user_id', status: 400 };
-    }
-
-    const supabase = getSupabase();
-
+async function handleLeaveQueue(supabase: any, userId: string) {
     const { error } = await supabase
         .from('waiting_queue')
         .delete()
-        .eq('user_id', user_id);
+        .eq('user_id', userId);
 
     if (error) {
         console.error('Error leaving queue:', error);
@@ -181,19 +275,11 @@ async function handleLeaveQueue(body: any) {
 /**
  * Check if a user is in the queue
  */
-async function handleCheckQueue(body: any) {
-    const { user_id } = body;
-
-    if (!user_id) {
-        return { error: 'Missing user_id', status: 400 };
-    }
-
-    const supabase = getSupabase();
-
+async function handleCheckQueue(supabase: any, userId: string) {
     const { data, error } = await supabase
         .from('waiting_queue')
         .select('id, joined_at')
-        .eq('user_id', user_id)
+        .eq('user_id', userId)
         .single();
 
     if (error) {
@@ -221,23 +307,55 @@ serve(async (req) => {
     }
 
     try {
+        const botToken = Deno.env.get('BOT_TOKEN');
+        if (!botToken) {
+            return new Response(
+                JSON.stringify({ error: 'Server configuration error' }),
+                { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+            );
+        }
+
         const body = await req.json();
-        const { action } = body;
+        const { action, initData } = body;
+
+        if (!initData) {
+            return new Response(
+                JSON.stringify({ error: 'Missing initData' }),
+                { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+            );
+        }
+
+        const isValid = await verifyInitData(initData, botToken);
+        if (!isValid || !isFreshAuthDate(initData)) {
+            return new Response(
+                JSON.stringify({ error: 'Invalid Telegram authentication' }),
+                { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+            );
+        }
+
+        const supabase = getSupabase();
+        const { userId, error: userError } = await resolveAppUserId(supabase, initData);
+        if (userError || !userId) {
+            return new Response(
+                JSON.stringify({ error: userError || 'Unable to resolve user' }),
+                { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+            );
+        }
 
         let result;
 
         switch (action) {
             case 'join':
-                result = await handleJoinQueue(body);
+                result = await handleJoinQueue(supabase, userId);
                 break;
             case 'find-opponent':
-                result = await handleFindOpponent(body);
+                result = await handleFindOpponent(supabase, userId);
                 break;
             case 'leave':
-                result = await handleLeaveQueue(body);
+                result = await handleLeaveQueue(supabase, userId);
                 break;
             case 'check':
-                result = await handleCheckQueue(body);
+                result = await handleCheckQueue(supabase, userId);
                 break;
             default:
                 return new Response(

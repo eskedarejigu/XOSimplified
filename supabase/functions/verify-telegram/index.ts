@@ -15,13 +15,22 @@
  */
 
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.0';
 
 // CORS headers for browser requests
 const corsHeaders = {
-    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Origin': Deno.env.get('ALLOWED_ORIGIN') || '*',
     'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
     'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
+
+const MAX_AUTH_AGE_SECONDS = 120;
+
+function getSupabase() {
+    const supabaseUrl = Deno.env.get('SUPABASE_URL') || '';
+    const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
+    return createClient(supabaseUrl, serviceRoleKey);
+}
 
 /**
  * Verify Telegram WebApp initData
@@ -99,6 +108,23 @@ async function verifyInitData(initData: string, botToken: string): Promise<boole
     }
 }
 
+function isFreshAuthDate(initData: string): boolean {
+    const params = new URLSearchParams(initData);
+    const authDateRaw = params.get('auth_date');
+
+    if (!authDateRaw) {
+        return false;
+    }
+
+    const authDate = Number(authDateRaw);
+    if (!Number.isFinite(authDate)) {
+        return false;
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    return now - authDate <= MAX_AUTH_AGE_SECONDS;
+}
+
 /**
  * Extract user data from initData
  */
@@ -115,6 +141,51 @@ function extractUser(initData: string): any {
     } catch {
         return null;
     }
+}
+
+async function upsertAppUser(telegramUser: any) {
+    const supabase = getSupabase();
+    const telegramId = telegramUser.id?.toString();
+
+    if (!telegramId) {
+        return { data: null, error: { message: 'Telegram user id is missing' } };
+    }
+
+    const { data: existingUser, error: fetchError } = await supabase
+        .from('users')
+        .select('*')
+        .eq('telegram_id', telegramId)
+        .single();
+
+    if (fetchError && fetchError.code !== 'PGRST116') {
+        return { data: null, error: fetchError };
+    }
+
+    const userPayload = {
+        telegram_id: telegramId,
+        username: telegramUser.username || null,
+        first_name: telegramUser.first_name || 'Player',
+        photo_url: telegramUser.photo_url || null,
+    };
+
+    if (existingUser) {
+        const { data, error } = await supabase
+            .from('users')
+            .update(userPayload)
+            .eq('id', existingUser.id)
+            .select()
+            .single();
+
+        return { data, error };
+    }
+
+    const { data, error } = await supabase
+        .from('users')
+        .insert([userPayload])
+        .select()
+        .single();
+
+    return { data, error };
 }
 
 // Main request handler
@@ -155,7 +226,7 @@ serve(async (req) => {
             );
         }
 
-        // Verify the initData
+        // Verify the initData signature and timestamp freshness
         const isValid = await verifyInitData(initData, botToken);
 
         if (!isValid) {
@@ -168,13 +239,40 @@ serve(async (req) => {
             );
         }
 
+        if (!isFreshAuthDate(initData)) {
+            return new Response(
+                JSON.stringify({
+                    valid: false,
+                    error: 'Expired Telegram auth payload',
+                }),
+                { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+            );
+        }
+
         // Extract user data
         const user = extractUser(initData);
+
+        if (!user) {
+            return new Response(
+                JSON.stringify({ valid: false, error: 'Missing Telegram user payload' }),
+                { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+            );
+        }
+
+        const { data: appUser, error: appUserError } = await upsertAppUser(user);
+
+        if (appUserError || !appUser) {
+            return new Response(
+                JSON.stringify({ error: 'Failed to sync app user' }),
+                { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+            );
+        }
 
         return new Response(
             JSON.stringify({
                 valid: true,
                 user: user,
+                appUser: appUser,
             }),
             { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );

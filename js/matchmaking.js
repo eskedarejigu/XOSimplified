@@ -59,50 +59,34 @@ async function startMatchmaking() {
     startMatchmakingTimer();
 
     try {
-        // Step 1: Check if someone is already waiting
-        const { data: opponent, error: findError } = await findOpponentInQueue(user.id);
+        // Step 1: Ask the server to atomically find and create a match
+        const { data: findResult, error: findError } = await findOpponentInQueue();
 
-        if (findError && findError.code !== 'PGRST116') {
+        if (findError) {
             console.error('Error finding opponent:', findError);
             showToast('Error finding opponent', 'error');
             stopMatchmaking();
             return null;
         }
 
-        if (opponent) {
-            // Found an opponent! Create a match immediately.
-            console.log('Found opponent:', opponent.user?.first_name);
-
-            // Remove opponent from queue first
-            await leaveWaitingQueue(opponent.user_id);
-
-            // Create the match
-            const { data: match, error: matchError } = await createMatch(user.id, opponent.user_id);
-
-            if (matchError) {
-                console.error('Error creating match:', matchError);
-                showToast('Error creating match', 'error');
-                stopMatchmaking();
-                return null;
-            }
-
-            console.log('Match created:', match.id);
+        if (findResult?.found && findResult?.match) {
+            console.log('Match created:', findResult.match.id);
 
             // Stop matchmaking and go to the game
             stopMatchmaking();
-            await startGame(match.id, false); // false = not AI opponent
+            await startGame(findResult.match.id, false); // false = not AI opponent
 
-            return match;
+            return findResult.match;
         }
 
         // Step 2: No opponent found, join the queue
         console.log('No opponent found, joining queue...');
 
         // Check if already in queue (safety check)
-        const { inQueue } = await isUserInQueue(user.id);
+        const { inQueue } = await isUserInQueue();
         
         if (!inQueue) {
-            const { data: queueEntry, error: queueError } = await joinWaitingQueue(user.id);
+            const { data: queueEntry, error: queueError } = await joinWaitingQueue();
 
             if (queueError) {
                 console.error('Error joining queue:', queueError);
@@ -238,7 +222,7 @@ async function stopMatchmaking() {
     // Remove from waiting queue
     const user = getCurrentUser();
     if (user) {
-        await leaveWaitingQueue(user.id);
+        await leaveWaitingQueue();
     }
 
     // Unsubscribe from match listeners
