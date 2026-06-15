@@ -11,8 +11,8 @@
 // ======== CONFIGURATION ========
 // These values come from environment variables or are hardcoded for now.
 // In production on Vercel, you'll set these as Environment Variables.
-const SUPABASE_URL = window.ENV?.SUPABASE_URL || 'YOUR_SUPABASE_PROJECT_URL';
-const SUPABASE_ANON_KEY = window.ENV?.SUPABASE_ANON_KEY || 'YOUR_SUPABASE_ANON_KEY';
+const SUPABASE_URL = window.ENV?.SUPABASE_URL || 'https://ymyiqkbfpwlxggxjzycq.supabase.co';
+const SUPABASE_ANON_KEY = window.ENV?.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InlteWlxa2JmcHdseGdneGp6eWNxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE0OTY5MjgsImV4cCI6MjA5NzA3MjkyOH0.LvIcdfUY47prOaIl6hfoB6JmWa0mISYmbtQd7661Yno';
 
 // ======== CREATE CLIENT ========
 // Create a single Supabase client for the entire app.

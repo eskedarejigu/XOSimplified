@@ -157,15 +157,17 @@ This creates all tables, indexes, security policies, and functions.
 
 ### 2.5 Set Up Environment Variables for Edge Functions
 
-1. In Supabase Dashboard, click **"Project Settings"**
-2. Click **"Functions"** in the left sidebar
-3. Add these environment variables:
+1. In Supabase Dashboard, open **Edge Function Secrets Management**
+2. You can find it in the Dashboard or go directly to **Project Settings > Secrets**
+3. Add these secrets:
 
 | Variable | Value | Description |
 |----------|-------|-------------|
 | `BOT_TOKEN` | Your bot token from Step 1 | Verifies Telegram auth |
-| `SUPABASE_URL` | Your project URL | Edge Functions use this |
-| `SUPABASE_SERVICE_ROLE_KEY` | Your service_role key | Admin access to DB |
+| `SUPABASE_URL` | Your project URL | Available to Edge Functions by default |
+| `SUPABASE_SERVICE_ROLE_KEY` | Your service role key | Admin access to DB; use only in Edge Functions |
+
+**Note:** Supabase now exposes some values by default in Edge Functions, including `SUPABASE_URL`. You still need to add custom secrets like `BOT_TOKEN`, and you can manage everything either in the Dashboard or with `supabase secrets set`.
 
 ### 2.6 Deploy Edge Functions
 

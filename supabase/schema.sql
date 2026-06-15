@@ -62,7 +62,7 @@ CREATE INDEX IF NOT EXISTS idx_queue_user_id ON waiting_queue(user_id);
 CREATE TABLE IF NOT EXISTS matches (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     player_x UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    player_o UUID NOT NULL,  -- Can be user ID or 'ai_opponent'
+    player_o TEXT NOT NULL,  -- Can be user ID (as text) or 'ai_opponent'
     board_state CHAR(9) NOT NULL DEFAULT '---------',
     current_turn CHAR(1) NOT NULL DEFAULT 'X' CHECK (current_turn IN ('X', 'O')),
     status VARCHAR(20) NOT NULL DEFAULT 'waiting' 
@@ -151,17 +151,17 @@ CREATE POLICY "Users can leave queue"
 -- Players can view their own matches
 CREATE POLICY "Players can view their matches" 
     ON matches FOR SELECT 
-    USING (player_x = auth.uid()::text OR player_o = auth.uid()::text);
+    USING (player_x = auth.uid() OR player_o = auth.uid()::text);
 
 -- Matches can be created by players
 CREATE POLICY "Players can create matches" 
     ON matches FOR INSERT 
-    WITH CHECK (player_x = auth.uid()::text OR player_o = auth.uid()::text);
+    WITH CHECK (player_x = auth.uid() OR player_o = auth.uid()::text);
 
 -- Players can update their active matches
 CREATE POLICY "Players can update their matches" 
     ON matches FOR UPDATE 
-    USING (player_x = auth.uid()::text OR player_o = auth.uid()::text);
+    USING (player_x = auth.uid() OR player_o = auth.uid()::text);
 
 -- ==================== RLS POLICIES FOR MOVES ====================
 
@@ -172,7 +172,7 @@ CREATE POLICY "Players can view match moves"
         EXISTS (
             SELECT 1 FROM matches 
             WHERE matches.id = moves.match_id 
-            AND (matches.player_x = auth.uid()::text OR matches.player_o = auth.uid()::text)
+            AND (matches.player_x = auth.uid() OR matches.player_o = auth.uid()::text)
         )
     );
 
@@ -183,7 +183,7 @@ CREATE POLICY "Players can record moves"
         EXISTS (
             SELECT 1 FROM matches 
             WHERE matches.id = moves.match_id 
-            AND (matches.player_x = auth.uid()::text OR matches.player_o = auth.uid()::text)
+            AND (matches.player_x = auth.uid() OR matches.player_o = auth.uid()::text)
         )
     );
 
@@ -210,7 +210,9 @@ RETURNS TRIGGER AS $$
 BEGIN
     -- Remove both players from waiting queue when a match starts
     DELETE FROM waiting_queue WHERE user_id = NEW.player_x;
-    DELETE FROM waiting_queue WHERE user_id = NEW.player_o;
+    IF NEW.player_o <> 'ai_opponent' THEN
+        DELETE FROM waiting_queue WHERE user_id = NEW.player_o::uuid;
+    END IF;
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
@@ -391,7 +393,7 @@ SELECT
     po.username as player_o_username
 FROM matches m
 LEFT JOIN users px ON m.player_x = px.id
-LEFT JOIN users po ON m.player_o = po.id
+LEFT JOIN users po ON m.player_o = po.id::text
 WHERE m.status IN ('waiting', 'active');
 
 -- View: Match history with results
@@ -406,13 +408,13 @@ SELECT
     po.first_name as player_o_name,
     CASE 
         WHEN m.winner = m.player_x THEN px.first_name
-        WHEN m.winner = m.player_o THEN po.first_name
+        WHEN m.winner::text = m.player_o THEN po.first_name
         ELSE 'Draw'
     END as winner_name,
     COUNT(mv.id) as total_moves
 FROM matches m
 LEFT JOIN users px ON m.player_x = px.id
-LEFT JOIN users po ON m.player_o = po.id
+LEFT JOIN users po ON m.player_o = po.id::text
 LEFT JOIN moves mv ON m.id = mv.match_id
 WHERE m.status = 'completed'
 GROUP BY m.id, px.first_name, po.first_name;
