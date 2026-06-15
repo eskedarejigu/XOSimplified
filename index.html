@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <!--
+        XO Arena - Telegram Mini App
+        Tic-Tac-Toe with online multiplayer and AI opponent
+    -->
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <title>XO Arena</title>
+    
+    <!-- Telegram Web App SDK - Must load before our scripts -->
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    
+    <!-- Supabase JS Client -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.39.0/dist/umd/supabase.min.js"></script>
+    
+    <!-- App Styles -->
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <!-- ==================== LOADING SCREEN ==================== -->
+    <!-- Shown when the app first loads, before Telegram auth completes -->
+    <div id="loading-screen" class="screen active">
+        <div class="loading-container">
+            <div class="logo">X O</div>
+            <div class="spinner"></div>
+            <p class="loading-text">Loading XO Arena...</p>
+        </div>
+    </div>
+
+    <!-- ==================== HOME SCREEN ==================== -->
+    <!-- Main screen - shows user profile and Play Online button -->
+    <div id="home-screen" class="screen">
+        <div class="home-container">
+            <!-- User Profile Card -->
+            <div class="profile-card">
+                <div class="profile-avatar">
+                    <img id="user-photo" src="" alt="Profile" style="display:none;">
+                    <div id="user-initials" class="avatar-fallback"></div>
+                </div>
+                <h1 id="user-name" class="profile-name">Player</h1>
+                <p id="user-username" class="profile-username"></p>
+            </div>
+
+            <!-- Stats Card -->
+            <div class="stats-card">
+                <div class="stat-item">
+                    <span id="games-played" class="stat-value">0</span>
+                    <span class="stat-label">Games</span>
+                </div>
+                <div class="stat-divider"></div>
+                <div class="stat-item">
+                    <span id="games-won" class="stat-value">0</span>
+                    <span class="stat-label">Wins</span>
+                </div>
+                <div class="stat-divider"></div>
+                <div class="stat-item">
+                    <span id="games-drawn" class="stat-value">0</span>
+                    <span class="stat-label">Draws</span>
+                </div>
+            </div>
+
+            <!-- Main Action Button -->
+            <button id="play-online-btn" class="btn btn-primary btn-large">
+                <span class="btn-icon">🎮</span>
+                Play Online
+            </button>
+
+            <!-- Play vs AI Button (secondary) -->
+            <button id="play-ai-btn" class="btn btn-secondary btn-large">
+                <span class="btn-icon">🤖</span>
+                Play vs AI
+            </button>
+
+            <!-- Connection Status -->
+            <div id="connection-status" class="connection-status">
+                <span class="status-dot"></span>
+                <span class="status-text">Connecting...</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- ==================== MATCHMAKING SCREEN ==================== -->
+    <!-- Shows searching animation while waiting for opponent -->
+    <div id="matchmaking-screen" class="screen">
+        <div class="matchmaking-container">
+            <div class="search-animation">
+                <div class="search-ring"></div>
+                <div class="search-ring"></div>
+                <div class="search-icon">🔍</div>
+            </div>
+
+            <h2 class="matchmaking-title">Finding Opponent...</h2>
+            <p class="matchmaking-subtitle">Searching for a worthy challenger</p>
+
+            <!-- Timer display -->
+            <div class="timer-display">
+                <span id="wait-timer" class="timer-value">00:00</span>
+                <span class="timer-label">elapsed</span>
+            </div>
+
+            <!-- Progress bar that fills over 30 seconds -->
+            <div class="progress-bar">
+                <div id="wait-progress" class="progress-fill"></div>
+            </div>
+            <p class="progress-text">Searching for <span id="wait-seconds">0</span>s / 30s</p>
+
+            <!-- Cancel Button -->
+            <button id="cancel-matchmaking-btn" class="btn btn-danger">
+                Cancel
+            </button>
+
+            <!-- AI Option (shown after 30s) -->
+            <div id="ai-option" class="ai-option hidden">
+                <p class="ai-option-text">No opponent found yet.</p>
+                <button id="matchmaking-play-ai-btn" class="btn btn-primary">
+                    Play vs AI
+                </button>
+                <button id="continue-waiting-btn" class="btn btn-secondary">
+                    Continue Waiting
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ==================== GAME SCREEN ==================== -->
+    <!-- The actual Tic-Tac-Toe game board -->
+    <div id="game-screen" class="screen">
+        <div class="game-container">
+            <!-- Game Header - Players Info -->
+            <div class="game-header">
+                <!-- Player X (current user) -->
+                <div id="player-x-card" class="player-card active">
+                    <div class="player-avatar">
+                        <img id="game-user-photo" src="" alt="" style="display:none;">
+                        <div id="game-user-initials" class="avatar-fallback small"></div>
+                    </div>
+                    <div class="player-info">
+                        <span id="player-x-name" class="player-name">You</span>
+                        <span class="player-symbol symbol-x">X</span>
+                    </div>
+                </div>
+
+                <!-- VS Badge -->
+                <div class="vs-badge">VS</div>
+
+                <!-- Player O (opponent) -->
+                <div id="player-o-card" class="player-card">
+                    <div class="player-avatar">
+                        <img id="game-opponent-photo" src="" alt="" style="display:none;">
+                        <div id="game-opponent-initials" class="avatar-fallback small"></div>
+                    </div>
+                    <div class="player-info">
+                        <span id="player-o-name" class="player-name">Opponent</span>
+                        <span class="player-symbol symbol-o">O</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Turn Indicator -->
+            <div id="turn-indicator" class="turn-indicator">
+                <span class="turn-text">Your turn!</span>
+            </div>
+
+            <!-- Game Board - 3x3 Grid -->
+            <div class="board-container">
+                <div id="game-board" class="game-board">
+                    <!-- Cells are generated by JavaScript -->
+                    <!-- Index 0-8 representing the board: -->
+                    <!-- 0 | 1 | 2 -->
+                    <!-- 3 | 4 | 5 -->
+                    <!-- 6 | 7 | 8 -->
+                    <div class="cell" data-index="0"></div>
+                    <div class="cell" data-index="1"></div>
+                    <div class="cell" data-index="2"></div>
+                    <div class="cell" data-index="3"></div>
+                    <div class="cell" data-index="4"></div>
+                    <div class="cell" data-index="5"></div>
+                    <div class="cell" data-index="6"></div>
+                    <div class="cell" data-index="7"></div>
+                    <div class="cell" data-index="8"></div>
+                </div>
+            </div>
+
+            <!-- Match Status -->
+            <div id="match-status" class="match-status">
+                <span class="status-badge">Match in progress</span>
+            </div>
+
+            <!-- Leave Match Button -->
+            <button id="leave-match-btn" class="btn btn-text">
+                Leave Match
+            </button>
+        </div>
+    </div>
+
+    <!-- ==================== RESULT SCREEN ==================== -->
+    <!-- Shows after match ends - win/loss/draw -->
+    <div id="result-screen" class="screen">
+        <div class="result-container">
+            <!-- Result Icon/Animation -->
+            <div id="result-icon" class="result-icon">🏆</div>
+
+            <!-- Result Title -->
+            <h1 id="result-title" class="result-title">You Won!</h1>
+
+            <!-- Result Message -->
+            <p id="result-message" class="result-message">Congratulations on your victory!</p>
+
+            <!-- Match Summary -->
+            <div class="match-summary">
+                <div class="summary-row">
+                    <span class="summary-label">You played as</span>
+                    <span id="result-symbol" class="summary-value symbol-x">X</span>
+                </div>
+                <div class="summary-row">
+                    <span class="summary-label">Total moves</span>
+                    <span id="result-moves" class="summary-value">5</span>
+                </div>
+                <div class="summary-row">
+                    <span class="summary-label">Match duration</span>
+                    <span id="result-duration" class="summary-value">1:23</span>
+                </div>
+            </div>
+
+            <!-- Action Buttons -->
+            <div class="result-actions">
+                <button id="play-again-btn" class="btn btn-primary btn-large">
+                    Play Again
+                </button>
+                <button id="back-home-btn" class="btn btn-secondary">
+                    Back to Home
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ==================== TOAST NOTIFICATIONS ==================== -->
+    <!-- For showing temporary messages -->
+    <div id="toast-container" class="toast-container"></div>
+
+    <!-- ==================== JAVASCRIPT MODULES ==================== -->
+    <!-- Load in order: config first, then utilities, then features -->
+    <script src="js/supabase.js"></script>
+    <script src="js/ai.js"></script>
+    <script src="js/auth.js"></script>
+    <script src="js/matchmaking.js"></script>
+    <script src="js/game.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>
