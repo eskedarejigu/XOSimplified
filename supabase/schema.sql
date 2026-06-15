@@ -122,7 +122,7 @@ CREATE POLICY "Users are viewable by everyone"
 -- Only the service role can insert users (via Edge Function)
 CREATE POLICY "Users can be created by service role" 
     ON users FOR INSERT 
-    WITH CHECK (false);  -- Only via service role or Edge Function
+    WITH CHECK (true);  -- Client-side auth flow creates the initial user record
 
 -- Users can update their own record
 CREATE POLICY "Users can update own record" 
